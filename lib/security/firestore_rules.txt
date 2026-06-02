@@ -1,0 +1,82 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Default: Deny all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Admins can read/write everything 
+    function isAdmin() {
+      return request.auth != null && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin";
+    }
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return request.auth.uid == userId;
+    }
+
+    // --- USERS COLLECTION ---
+    match /users/{userId} {
+      // Users can only read their own doc, admins read all
+      allow read: if isAuthenticated() && (isOwner(userId) || isAdmin());
+      // Users can only create their own doc on signup
+      allow create: if isAuthenticated() && isOwner(userId);
+      // Users can update their own doc BUT cannot escalate role
+      allow update: if isAuthenticated() && 
+                    (isAdmin() || 
+                    (isOwner(userId) && 
+                     request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'phone', 'profilePictureUrl', 'savedPropertyIds']) && 
+                     request.resource.data.role == resource.data.role));
+      // Delete typically locked down
+      allow delete: if isAdmin();
+    }
+
+    // --- SELLER SUBMISSIONS ---
+    match /seller_submissions/{docId} {
+      // Admins read all. Users read only their own.
+      allow read: if isAuthenticated() && (isAdmin() || isOwner(resource.data.userId));
+      // Authenticated users can create
+      allow create: if isAuthenticated();
+      // Only admin updates/deletes
+      allow update, delete: if isAdmin();
+    }
+
+    // --- BUYER REQUIREMENTS ---
+    match /buyer_requirements/{docId} {
+      // Admins read all. Users read only their own.
+      allow read: if isAuthenticated() && (isAdmin() || isOwner(resource.data.userId));
+      // Authenticated users can create
+      allow create: if isAuthenticated();
+      // Only admin updates/deletes
+      allow update, delete: if isAdmin();
+    }
+
+    // --- ADMIN POSTS (Public Listings) ---
+    match /admin_posts/{docId} {
+      // Any authenticated user can read public listings published by admin
+      allow read: if isAuthenticated();
+      // Only admins can write
+      allow write: if isAdmin();
+    }
+
+    // --- CHATS ---
+    match /chats/{chatId} {
+      // A user or admin involved in the chat can read and write to it
+      allow read, write: if isAuthenticated() && (isAdmin() || isOwner(resource.data.userId));
+      allow create: if isAuthenticated(); // Allowed to initiate a chat
+      
+      // Messages Sub-collection
+      match /messages/{messageId} {
+        // Can read/write messages if they have access to parent chat doc
+        allow read, write: if isAuthenticated() && (isAdmin() || get(/databases/$(database)/documents/chats/$(chatId)).data.userId == request.auth.uid);
+      }
+    }
+  }
+}
